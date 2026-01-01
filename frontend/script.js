@@ -4,11 +4,140 @@ let currentUser = null;
 let authToken = null;
 
 document.addEventListener('DOMContentLoaded', function() {
+    initializeMockData();
     checkAuth();
     setupEventListeners();
     initializeDatePicker();
     setupServiceCards();
 });
+
+function initializeMockData() {
+    if (window.location.hash === '#mock') {
+        console.log('Using mock data for testing');
+        
+        currentUser = {
+            id: 'mock-user-123',
+            name: 'Test User',
+            email: 'test@example.com',
+            phone: '9876543210',
+            address: '123 Test Street, Test City',
+            walletBalance: 1500,
+            createdAt: new Date().toISOString()
+        };
+        
+        authToken = 'mock-jwt-token-12345';
+        
+        localStorage.setItem('authToken', authToken);
+        localStorage.setItem('user', JSON.stringify(currentUser));
+        
+        showMainApp();
+        loadUserData();
+        
+        showNotification('Using mock data for testing', 'success');
+        
+        window.mockDataEnabled = true;
+        
+        if (typeof fetch !== 'function') return;
+        
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            if (url.includes('/api/')) {
+                console.log('Mocking API call:', url);
+                
+                if (url.includes('/api/orders') && options?.method !== 'POST') {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockOrdersForTesting())
+                    });
+                }
+                
+                if (url.includes('/api/feedback') && options?.method === 'GET') {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(mockFeedbackForTesting())
+                    });
+                }
+                
+                if (url.includes('/api/users/profile')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve(currentUser)
+                    });
+                }
+                
+                if (url.includes('/api/users/transactions')) {
+                    return Promise.resolve({
+                        ok: true,
+                        json: () => Promise.resolve([])
+                    });
+                }
+                
+                return Promise.resolve({
+                    ok: false,
+                    json: () => Promise.resolve({ message: 'Backend not connected' })
+                });
+            }
+            
+            return originalFetch.apply(this, arguments);
+        };
+    }
+}
+
+function mockOrdersForTesting() {
+    if (!currentUser) return [];
+    
+    return [
+        {
+            _id: 'order-mock-001',
+            serviceType: 'wash-fold',
+            weight: 5,
+            totalAmount: 750,
+            pickupDate: new Date(),
+            pickupTime: '9am-11am',
+            address: '123 Test Street',
+            createdAt: new Date(),
+            express: false,
+            status: 'completed'
+        },
+        {
+            _id: 'order-mock-002',
+            serviceType: 'dry-clean',
+            weight: 3,
+            totalAmount: 750,
+            pickupDate: new Date(Date.now() + 86400000),
+            pickupTime: '3pm-5pm',
+            address: '123 Test Street',
+            createdAt: new Date(Date.now() - 86400000),
+            express: true,
+            status: 'processing'
+        }
+    ];
+}
+
+function mockFeedbackForTesting() {
+    if (!currentUser) return [];
+    
+    return [
+        {
+            _id: 'feedback-mock-001',
+            orderDetails: 'Order #mock-001 - Wash & Fold - ₹750',
+            rating: 5,
+            comments: 'Excellent service!',
+            serviceQuality: 5,
+            recommend: 'yes',
+            createdAt: new Date(Date.now() - 172800000)
+        },
+        {
+            _id: 'feedback-mock-002',
+            orderDetails: 'Order #mock-002 - Dry Cleaning - ₹750',
+            rating: 4,
+            comments: 'Good service overall',
+            serviceQuality: 4,
+            recommend: 'yes',
+            createdAt: new Date(Date.now() - 86400000)
+        }
+    ];
+}
 
 function initializeDatePicker() {
     const today = new Date().toISOString().split('T')[0];
@@ -197,6 +326,7 @@ function setupAppListeners() {
     });
     
     document.getElementById('book-now-hero').addEventListener('click', () => switchPage('book'));
+    document.getElementById('book-first-order').addEventListener('click', () => switchPage('book'));
     
     document.getElementById('add-money-btn').addEventListener('click', openWalletModal);
     document.getElementById('add-money-profile').addEventListener('click', openWalletModal);
@@ -319,8 +449,8 @@ async function handleSignup(e) {
 }
 
 function validatePhone(phone) {
-    const phoneRegex = /^[0-9]{10}$/;
-    return phoneRegex.test(phone);
+    const cleaned = phone.replace(/\D/g, '');
+    return /^[0-9]{10}$/.test(cleaned);
 }
 
 function handleLogout() {
@@ -336,8 +466,15 @@ function switchPage(page) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-links a').forEach(link => link.classList.remove('active'));
     
-    document.getElementById(`${page}-page`).classList.add('active');
-    document.querySelector(`[data-page="${page}"]`).classList.add('active');
+    const pageElement = document.getElementById(`${page}-page`);
+    if (pageElement) {
+        pageElement.classList.add('active');
+    }
+    
+    const navLink = document.querySelector(`[data-page="${page}"]`);
+    if (navLink) {
+        navLink.classList.add('active');
+    }
     
     if (page === 'orders') {
         loadOrders();
@@ -346,6 +483,11 @@ function switchPage(page) {
     } else if (page === 'book') {
         prefillBookingForm();
         calculatePrice();
+    } else if (page === 'feedback') {
+        setTimeout(() => {
+            initializeFeedbackPage();
+            loadFeedbackPage();
+        }, 100);
     }
 }
 
@@ -452,9 +594,12 @@ async function loadOrders() {
         if (response.ok) {
             const orders = await response.json();
             displayOrders(orders);
+        } else {
+            displayOrders([]);
         }
     } catch (error) {
         console.error('Error loading orders:', error);
+        displayOrders([]);
     }
 }
 
@@ -486,7 +631,7 @@ function displayOrders(orders) {
         const statusText = order.status || 'Scheduled';
         
         orderItem.innerHTML = `
-            <h4>Order #${order._id.slice(-6)}
+            <h4>Order #${order._id ? order._id.slice(-6) : 'N/A'}
                 <span class="order-status ${statusClass}">${statusText}</span>
             </h4>
             <div class="order-details">
@@ -911,6 +1056,356 @@ function setupEditProfileModal() {
             showNotification(error.message, 'error');
         }
     });
+}
+
+function setupFeedbackStars() {
+    const stars = document.querySelectorAll('.stars i');
+    const ratingValue = document.getElementById('rating-value');
+    const ratingText = document.querySelector('.rating-text');
+    
+    if (!stars.length || !ratingValue) {
+        return;
+    }
+    
+    stars.forEach((star, index) => {
+        star.setAttribute('data-rating', (index + 1).toString());
+        
+        star.addEventListener('click', function() {
+            const rating = parseInt(this.getAttribute('data-rating'));
+            ratingValue.value = rating.toString();
+            
+            stars.forEach(s => s.classList.remove('active'));
+            
+            for (let i = 0; i < rating; i++) {
+                stars[i].classList.add('active');
+            }
+            
+            const ratings = ['Select rating', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
+            ratingText.textContent = ratings[rating] || 'Select rating';
+        });
+        
+        star.addEventListener('mouseover', function() {
+            const rating = parseInt(this.getAttribute('data-rating'));
+            stars.forEach((s, idx) => {
+                if (idx < rating) {
+                    s.classList.add('hover');
+                } else {
+                    s.classList.remove('hover');
+                }
+            });
+        });
+        
+        star.addEventListener('mouseout', function() {
+            stars.forEach(s => s.classList.remove('hover'));
+        });
+    });
+    
+    ratingValue.value = "0";
+}
+
+async function handleFeedbackSubmit(e) {
+    e.preventDefault();
+    
+    if (!currentUser) {
+        showNotification('Please login to submit feedback', 'error');
+        return;
+    }
+    
+    const orderId = document.getElementById('feedback-order').value;
+    const ratingValue = document.getElementById('rating-value').value;
+    const comments = document.getElementById('feedback-comments').value;
+    const serviceQuality = document.querySelector('input[name="quality"]:checked')?.value;
+    const recommend = document.querySelector('input[name="recommend"]:checked')?.value;
+    
+    let rating = parseInt(ratingValue) || 0;
+    const feedbackComments = comments || '';
+    
+    let serviceQualityValue = null;
+    if (serviceQuality) {
+        serviceQualityValue = parseInt(serviceQuality);
+    }
+    
+    const feedbackData = {
+        orderId: orderId || null,
+        rating: rating,
+        comments: feedbackComments,
+        serviceQuality: serviceQualityValue,
+        recommend: recommend || 'yes',
+        submittedAt: new Date().toISOString()
+    };
+    
+    const submitButton = document.querySelector('#feedback-form button[type="submit"]');
+    const originalText = submitButton.textContent;
+    submitButton.textContent = 'Submitting...';
+    submitButton.disabled = true;
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/feedback`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify(feedbackData)
+        });
+        
+        if (response.ok) {
+            showNotification('Feedback submitted successfully!', 'success');
+            resetFeedbackForm();
+            await loadFeedbackHistory();
+        } else {
+            const savedFeedback = saveFeedbackLocally(feedbackData);
+            showNotification('Feedback saved locally!', 'success');
+            resetFeedbackForm();
+            await loadFeedbackHistory();
+        }
+        
+    } catch (error) {
+        const savedFeedback = saveFeedbackLocally(feedbackData);
+        showNotification('Feedback saved locally!', 'success');
+        resetFeedbackForm();
+        await loadFeedbackHistory();
+        
+    } finally {
+        submitButton.textContent = originalText;
+        submitButton.disabled = false;
+    }
+}
+
+function resetFeedbackForm() {
+    document.getElementById('feedback-form').reset();
+    document.querySelectorAll('.stars i').forEach(star => star.classList.remove('active'));
+    document.getElementById('rating-value').value = "0";
+    const ratingText = document.querySelector('.rating-text');
+    if (ratingText) {
+        ratingText.textContent = 'Select rating';
+    }
+    document.querySelectorAll('input[name="quality"]').forEach(radio => radio.checked = false);
+    document.getElementById('recommend-yes').checked = true;
+}
+
+function saveFeedbackLocally(feedbackData) {
+    try {
+        const existingFeedback = JSON.parse(localStorage.getItem('localFeedback') || '[]');
+        
+        const newFeedback = {
+            ...feedbackData,
+            id: `local-${Date.now()}`,
+            createdAt: new Date().toISOString(),
+            orderDetails: feedbackData.orderId ? `Order #${feedbackData.orderId.slice(-6)}` : 'General Feedback'
+        };
+        
+        existingFeedback.push(newFeedback);
+        localStorage.setItem('localFeedback', JSON.stringify(existingFeedback));
+        
+        return newFeedback;
+    } catch (error) {
+        return { success: true };
+    }
+}
+
+async function loadFeedbackHistory() {
+    try {
+        const feedbackList = document.getElementById('feedback-list');
+        
+        let feedbacks = [];
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/feedback`, {
+                headers: {
+                    'Authorization': `Bearer ${authToken}`
+                }
+            });
+            
+            if (response.ok) {
+                feedbacks = await response.json();
+            }
+        } catch (apiError) {
+            console.log('Using local feedback');
+        }
+        
+        try {
+            const localFeedback = JSON.parse(localStorage.getItem('localFeedback') || '[]');
+            feedbacks = [...feedbacks, ...localFeedback];
+        } catch (localError) {
+            console.log('No local feedback found');
+        }
+        
+        displayFeedbackHistory(feedbacks);
+        
+    } catch (error) {
+        displayFeedbackHistory([]);
+    }
+}
+
+function displayFeedbackHistory(feedbacks) {
+    const feedbackList = document.getElementById('feedback-list');
+    if (!feedbackList) {
+        return;
+    }
+    
+    feedbackList.innerHTML = '';
+    
+    if (!feedbacks || feedbacks.length === 0) {
+        feedbackList.innerHTML = `
+            <div class="no-feedback">
+                <i class="fas fa-comment-dots"></i>
+                <h4>No Feedback Yet</h4>
+                <p>Share your first feedback to help us improve!</p>
+            </div>
+        `;
+        return;
+    }
+    
+    feedbacks.sort((a, b) => {
+        const dateA = new Date(a.createdAt || 0);
+        const dateB = new Date(b.createdAt || 0);
+        return dateB - dateA;
+    });
+    
+    feedbacks.forEach(feedback => {
+        const feedbackItem = document.createElement('div');
+        feedbackItem.className = 'feedback-item';
+        
+        let stars = '';
+        const rating = parseInt(feedback.rating) || 0;
+        for (let i = 1; i <= 5; i++) {
+            stars += i <= rating ? '<i class="fas fa-star"></i>' : '<i class="far fa-star"></i>';
+        }
+        
+        const serviceQuality = feedback.serviceQuality ? 
+            `${parseInt(feedback.serviceQuality)}/5` : 'Not rated';
+        
+        const recommendText = feedback.recommend === 'yes' ? 
+            'Would recommend' : feedback.recommend === 'no' ? 'Would not recommend' : 'Not specified';
+        
+        let formattedDate = 'Date not available';
+        try {
+            if (feedback.createdAt) {
+                const date = new Date(feedback.createdAt);
+                if (!isNaN(date.getTime())) {
+                    formattedDate = date.toLocaleDateString('en-IN', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                    });
+                }
+            }
+        } catch (dateError) {
+        }
+        
+        const comments = feedback.comments || 'No comments provided';
+        
+        feedbackItem.innerHTML = `
+            <div class="feedback-item-header">
+                <h4>${feedback.orderDetails || 'General Feedback'}</h4>
+                <div class="feedback-rating">${stars}</div>
+            </div>
+            <p class="feedback-comments">${comments}</p>
+            <div class="feedback-meta">
+                <span>${formattedDate}</span>
+                <span>Service Quality: ${serviceQuality}</span>
+                <span>${recommendText}</span>
+            </div>
+        `;
+        
+        if (feedback.id && feedback.id.startsWith('local-')) {
+            const localIndicator = document.createElement('div');
+            localIndicator.className = 'local-indicator';
+            localIndicator.innerHTML = '<i class="fas fa-save"></i> Saved Locally';
+            localIndicator.style.cssText = `
+                font-size: 0.8rem;
+                color: #666;
+                background: #f0f0f0;
+                padding: 2px 8px;
+                border-radius: 10px;
+                margin-top: 5px;
+                display: inline-block;
+            `;
+            feedbackItem.appendChild(localIndicator);
+        }
+        
+        feedbackList.appendChild(feedbackItem);
+    });
+}
+
+function setupCommentCounter() {
+    const commentsTextarea = document.getElementById('feedback-comments');
+    if (!commentsTextarea) return;
+    
+    const counter = document.createElement('div');
+    counter.className = 'comment-counter';
+    counter.style.cssText = `
+        text-align: right;
+        font-size: 0.8rem;
+        color: #666;
+        margin-top: 5px;
+        margin-bottom: 10px;
+    `;
+    
+    commentsTextarea.parentNode.insertBefore(counter, commentsTextarea.nextSibling);
+    
+    function updateCounter() {
+        const length = commentsTextarea.value.length;
+        counter.textContent = `${length} characters entered`;
+    }
+    
+    updateCounter();
+    
+    commentsTextarea.addEventListener('input', updateCounter);
+}
+
+function initializeFeedbackPage() {
+    setupFeedbackStars();
+    setupCommentCounter();
+    
+    const commentsTextarea = document.getElementById('feedback-comments');
+    if (commentsTextarea) {
+        commentsTextarea.placeholder = "Enter your feedback here... (optional)";
+    }
+    
+    const feedbackForm = document.getElementById('feedback-form');
+    if (feedbackForm) {
+        feedbackForm.removeEventListener('submit', handleFeedbackSubmit);
+        feedbackForm.addEventListener('submit', handleFeedbackSubmit);
+    }
+}
+
+async function loadFeedbackPage() {
+    if (!currentUser) return;
+    
+    try {
+        await loadOrdersForFeedback();
+        await loadFeedbackHistory();
+    } catch (error) {
+        displayFeedbackHistory([]);
+    }
+}
+
+async function loadOrdersForFeedback() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/orders`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        const feedbackSelect = document.getElementById('feedback-order');
+        feedbackSelect.innerHTML = '<option value="">Select an order (optional)</option>';
+        
+        if (response.ok) {
+            const orders = await response.json();
+            
+            orders.forEach(order => {
+                const option = document.createElement('option');
+                option.value = order._id || '';
+                const serviceName = order.serviceType === 'dry-clean' ? 'Dry Cleaning' : 'Wash & Fold';
+                option.textContent = `Order #${order._id ? order._id.slice(-6) : ''} - ${serviceName}`;
+                feedbackSelect.appendChild(option);
+            });
+        }
+    } catch (error) {
+    }
 }
 
 function showNotification(message, type) {
